@@ -38,24 +38,25 @@ A modern React + Express application that delivers AI-powered sales briefings us
 
 ### Authentication Flow
 
-This app uses **two different authentication mechanisms**:
+This app uses **External Client Apps (ECA)** with OAuth 2.0 PKCE:
 
-| Component | Auth Type | Purpose |
-|-----------|-----------|---------|
-| **User Login** | Connected App (OAuth 2.0 PKCE) | Browser-based user authentication |
-| **MCP Gateway** | External Client App (ECA) | Data access via hosted MCP — handled internally by Salesforce |
-| **Models API** | External Client App (ECA) | LLM access with Trust Layer |
+| Component | ECA | OAuth Scope | Purpose |
+|-----------|-----|-------------|---------|
+| **MCP Data Access** | Primary ECA | `mcp_api` | Query Salesforce data via MCP gateway |
+| **Models API / Updates** | Secondary ECA | `sfap_api api` | LLM access + record updates |
 
-**You only configure the Connected App** — the MCP gateway's ECA authentication is managed by Salesforce's hosted infrastructure. When your user logs in via OAuth, their access token is passed to the MCP gateway, which uses its own ECA credentials internally.
+**Two separate ECAs are required** because different OAuth scopes cannot share the same token without invalidating each other.
 
-> **Note on Observability:** Because MCP uses ECA internally, real-time event monitoring (ApiEvent) has limited visibility into MCP queries. See the [Event Monitoring documentation](https://developer.salesforce.com/docs/atlas.en-us.platform_events.meta/platform_events/sforce_api_objects_apievent.htm) for details.
+> **Note on Observability:** ECA authentication has limited visibility in real-time event monitoring — `LoginEvent` fires, but `ApiEvent` does not fire for MCP-routed queries. Activity is captured in daily EventLogFile CSVs but not in queryable Event Log Objects. See the [Event Monitoring documentation](https://developer.salesforce.com/docs/atlas.en-us.platform_events.meta/platform_events/sforce_api_objects_apievent.htm) for details.
 
 ## Prerequisites
 
 - **Node.js** 18+ 
-- **Salesforce Org** with API access and Shield Event Monitoring (for full observability)
-- **Connected App** configured for OAuth 2.0 PKCE (for user login only)
-- **Anthropic API Key** (for AI features) — or Salesforce Models API access via ECA
+- **Salesforce Org** with API access
+- **Two External Client Apps (ECA)** configured for OAuth 2.0 PKCE:
+  - Primary ECA with `mcp_api` scope (for MCP data access)
+  - Secondary ECA with `sfap_api api` scope (for Models API / record updates)
+- **Anthropic API Key** (optional) — for external LLM, or use Salesforce Models API
 
 ## Quick Start
 
@@ -67,21 +68,29 @@ cd agentforce-today-remodel
 npm install
 ```
 
-### 2. Configure Salesforce Connected App (User Login)
+### 2. Configure External Client Apps (ECA)
 
-Create a Connected App for **user authentication** (the MCP gateway uses its own ECA internally):
+Create **two ECAs** in your Salesforce org — they need separate Client IDs because the scopes differ:
 
-1. **Setup** → **App Manager** → **New Connected App**
-2. Enable OAuth Settings:
+#### Primary ECA (MCP Data Access)
+
+1. **Setup** → **External Client Apps** → **New**
+2. Configure OAuth:
    - **Callback URL**: `http://localhost:3335/oauth/callback`
-   - **Selected OAuth Scopes**:
-     - `api` (Access and manage your data)
-     - `refresh_token, offline_access`
-     - `openid`
-3. Enable **PKCE** (Require Proof Key for Code Exchange)
-4. Save and copy the **Consumer Key** (Client ID)
+   - **OAuth Scopes**: `mcp_api`, `refresh_token`
+3. Enable **PKCE**
+4. Copy the **Client ID** → use as `SF_CLIENT_ID`
 
-> **Why Connected App and not ECA?** Connected Apps provide full Shield Event Monitoring visibility (LoginEvent, ApiEvent). ECA/JWT authentication — which the MCP gateway uses internally — has observability gaps in real-time event monitoring. For user-facing login, Connected Apps are preferred.
+#### Secondary ECA (Models API + Record Updates)
+
+1. **Setup** → **External Client Apps** → **New**
+2. Configure OAuth:
+   - **Callback URL**: `http://localhost:3335/oauth/models-callback`
+   - **OAuth Scopes**: `sfap_api`, `api`, `refresh_token`
+3. Enable **PKCE**
+4. Copy the **Client ID** → use as `SF_MODELS_CLIENT_ID`
+
+> **Why two ECAs?** OAuth tokens are scoped. A single token cannot hold both `mcp_api` and `api` scopes without one invalidating the other. Separate ECAs allow both MCP queries and REST API updates to work simultaneously.
 
 ### 3. Configure Environment
 
@@ -97,14 +106,22 @@ Edit `.env`:
 # Salesforce MCP Server URL
 MCP_SERVER_URL=https://api.salesforce.com/platform/mcp/v1/platform/sobject-all
 
-# Salesforce OAuth 2.0 PKCE
-SF_CLIENT_ID=your_connected_app_client_id
+# Primary ECA — MCP data access (mcp_api scope)
+SF_CLIENT_ID=your_primary_eca_client_id
+
+# Secondary ECA — Models API + record updates (sfap_api, api scopes)
+SF_MODELS_CLIENT_ID=your_secondary_eca_client_id
+
+# Salesforce URLs
 SF_LOGIN_URL=https://your-org.my.salesforce.com
-SF_TOKEN_URL=https://your-org.my.salesforce.com
+SF_TOKEN_URL=https://login.salesforce.com
 CALLBACK_URL=http://localhost:3335/oauth/callback
 
-# Anthropic API key (get at https://console.anthropic.com)
-ANTHROPIC_API_KEY=sk-ant-...
+# Salesforce Models API model name
+SF_MODELS_API_MODEL=sfdc_ai__DefaultOpenAIGPT4OmniMini
+
+# Optional: Anthropic API key (used if no Models API)
+ANTHROPIC_API_KEY=
 
 # Server port
 PORT=3335
